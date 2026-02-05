@@ -1,0 +1,358 @@
+design.md (AWS Architecture)
+# Agro-Guard Saathi - System Design Document
+
+## Architecture Overview
+
+Agro-Guard Saathi is built on a fully serverless AWS architecture designed for the "Next Billion" users in rural India. The system provides proactive agricultural crisis management through AI-powered crop diagnosis and weather alerts delivered in Hindi and Marathi.
+
+### Core Principles
+- **Proactive vs Reactive**: Push alerts before disasters strike, don't wait for farmers to check apps
+- **Voice-First Design**: Eliminate literacy barriers through vernacular speech
+- **Serverless Scalability**: Zero cost when idle, infinite scale during peak usage
+- **Hyper-Local Intelligence**: 5km radius precision for weather and crop monitoring
+
+## System Architecture
+
+┌─────────────────┐ ┌──────────────────┐ ┌─────────────────┐ │ Farmer │ │ WhatsApp │ │ AWS Lambda │ │ (Rural India) │◄──►│ Business API │◄──►│ Orchestrator │ └─────────────────┘ └──────────────────┘ └─────────────────┘ │ ┌─────────────────────────────────┼─────────────────────────────────┐ │ │ │ ▼ ▼ ▼ ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐ │ Amazon S3 │ │ Amazon │ │ DynamoDB │ │ (Images/ │ │ Bedrock │ │ (Farmer │ │ Audio) │ │ (Claude 3.5) │ │ Profiles) │ └─────────────────┘ └─────────────────┘ └─────────────────┘ │ ┌────────────────────┼────────────────────┐ │ │ │ ▼ ▼ ▼ ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐ │ Amazon │ │ Amazon │ │ Amazon │ │ Polly │ │ Connect │ │ Ground │ │ (Hindi/ │ │ (Voice │ │ Station │ │ Marathi) │ │ Calls) │ │ (Satellite) │ └─────────────────┘ └─────────────────┘ └─────────────────┘
+
+
+## Core Components
+
+### 1. AWS Lambda Orchestrator
+**Purpose**: Central nervous system for proactive intelligence and workflow coordination
+
+**Responsibilities**:
+- Process WhatsApp webhooks in real-time
+- Coordinate image analysis using Amazon Bedrock
+- Implement severity-based routing logic (>7 = voice call, ≤7 = text)
+- Handle SMS fallbacks for connectivity issues
+- Manage farmer session state and language preferences
+- Process satellite telemetry for early warning triggers
+
+**Key Functions**:
+```javascript
+// Main orchestration function
+exports.handler = async (event) => {
+    const { messageType, farmerId, imageUrl, severity } = event;
+    
+    if (messageType === 'image') {
+        const diagnosis = await analyzeCropImage(imageUrl);
+        if (diagnosis.severity > 7) {
+            await triggerVoiceCall(farmerId, diagnosis);
+        } else {
+            await sendWhatsAppResponse(farmerId, diagnosis);
+        }
+    }
+};
+2. Amazon Bedrock (Claude 3.5 Sonnet)
+Purpose: Multimodal AI for crop disease diagnosis and vernacular response generation
+
+Capabilities:
+
+Vision-based analysis of crop leaf images
+Disease identification with confidence scoring (1-10 scale)
+Pest and nutrient deficiency detection
+Treatment recommendation generation in Hindi/Marathi
+Context-aware analysis using farmer history and location
+Integration with satellite data for comprehensive assessment
+API Integration:
+
+import boto3
+
+bedrock = boto3.client('bedrock-runtime')
+
+def analyze_crop_image(image_url, farmer_context):
+    prompt = f"""
+    Analyze this crop leaf image for diseases, pests, and deficiencies.
+    Farmer location: {farmer_context['location']}
+    Crop type: {farmer_context['crops']}
+    Language: {farmer_context['language']}
+    
+    Provide diagnosis in {farmer_context['language']} with:
+    1. Disease/pest identification
+    2. Severity score (1-10)
+    3. Treatment recommendations using local ingredients
+    """
+    
+    response = bedrock.invoke_model(
+        modelId='anthropic.claude-3-5-sonnet-20241022-v2:0',
+        body=json.dumps({
+            'messages': [{'role': 'user', 'content': prompt}],
+            'max_tokens': 1000
+        })
+    )
+    return response
+3. Amazon Polly (Vernacular Speech Engine)
+Purpose: Text-to-speech conversion for Hindi and Marathi voice alerts
+
+Voice Configuration:
+
+Hindi: Aditi (female, neural engine) for natural pronunciation
+Marathi: Hindi voice with Marathi text processing for authentic delivery
+Speech Optimization: Adjusted pace for farmers with varying literacy levels
+Regional Accents: Optimized for rural pronunciation patterns
+Implementation:
+
+def generate_voice_message(text, language):
+    polly = boto3.client('polly')
+    
+    voice_config = {
+        'hindi': {'VoiceId': 'Aditi', 'LanguageCode': 'hi-IN'},
+        'marathi': {'VoiceId': 'Aditi', 'LanguageCode': 'hi-IN'}  # Uses Hindi voice
+    }
+    
+    response = polly.synthesize_speech(
+        Text=text,
+        OutputFormat='mp3',
+        VoiceId=voice_config[language]['VoiceId'],
+        LanguageCode=voice_config[language]['LanguageCode'],
+        Engine='neural'
+    )
+    return response['AudioStream'].read()
+4. Amazon Connect (Voice-First Alerts)
+Purpose: Automated voice calling system for critical alerts to basic phones
+
+Features:
+
+Dynamic phone number routing for rural areas
+Integration with Polly for vernacular voice synthesis
+IVR support for interactive farmer responses
+Call recording and analytics for system improvement
+Callback functionality for missed calls
+Call Flow Configuration:
+
+{
+  "contactFlow": {
+    "name": "CriticalCropAlert",
+    "steps": [
+      {
+        "type": "playPrompt",
+        "audioFile": "generated-by-polly",
+        "language": "hindi|marathi"
+      },
+      {
+        "type": "getInput",
+        "prompt": "Press 1 to repeat, 2 for SMS backup",
+        "timeout": 10
+      }
+    ]
+  }
+}
+5. DynamoDB (Farmer Data Management)
+Purpose: Scalable NoSQL database for farmer profiles and interaction history
+
+Table Schemas:
+
+Farmers Table
+{
+  "farmer_id": "string (partition key)",
+  "phone_number": "string",
+  "whatsapp_number": "string",
+  "location": {
+    "latitude": "number",
+    "longitude": "number",
+    "district": "string",
+    "state": "string",
+    "monitoring_zone_5km": "string"
+  },
+  "language_preference": "string", // "hindi" | "marathi"
+  "communication_preference": "string", // "voice" | "text" | "both"
+  "crops": ["string"],
+  "farm_size_acres": "number",
+  "call_time_restrictions": {
+    "start_hour": "number",
+    "end_hour": "number"
+  },
+  "created_at": "timestamp",
+  "updated_at": "timestamp"
+}
+Diagnoses Table
+{
+  "diagnosis_id": "string (partition key)",
+  "farmer_id": "string (GSI partition key)",
+  "image_url": "string",
+  "disease_identified": "string",
+  "severity_score": "number",
+  "treatment_recommendations": "string",
+  "language": "string",
+  "alert_method": "string", // "voice" | "whatsapp" | "sms"
+  "timestamp": "timestamp"
+}
+6. Amazon S3 (Media Storage)
+Purpose: Scalable object storage for images, audio files, and analytics data
+
+Bucket Structure:
+
+agro-guard-images/: Compressed crop images (<500KB)
+agro-guard-audio/: Generated voice messages from Polly
+agro-guard-analytics/: Processed diagnosis results and farmer interaction logs
+Lifecycle Policies:
+
+Images: Delete after 30 days (privacy compliance)
+Audio: Archive to Glacier after 90 days
+Analytics: Retain for 1 year for insights
+Sequence Diagram: WhatsApp to Marathi Voice Call
+sequenceDiagram
+    participant F as Farmer<br/>(Rural India)
+    participant WA as WhatsApp<br/>Business API
+    participant L as AWS Lambda<br/>(Orchestrator)
+    participant S3 as Amazon S3
+    participant BR as Amazon Bedrock<br/>(Claude 3.5 Sonnet)
+    participant DB as DynamoDB
+    participant P as Amazon Polly<br/>(Marathi TTS)
+    participant AC as Amazon Connect<br/>(Voice Call)
+
+    Note over F,AC: Critical Crop Disease Alert Flow
+
+    F->>WA: Upload crop leaf image
+    WA->>L: Webhook: New image received
+    
+    L->>S3: Store compressed image (<500KB)
+    S3-->>L: Return image URL
+    
+    L->>DB: Query farmer profile
+    DB-->>L: Return profile (language: marathi, phone: +91...)
+    
+    L->>BR: Analyze image + farmer context
+    Note over BR: Vision Analysis:<br/>• Disease: Leaf Blight<br/>• Severity: 8/10<br/>• Language: Marathi
+    BR-->>L: Return diagnosis (severity: 8, critical: true)
+    
+    Note over L: Severity > 7: Trigger Voice Call
+    
+    L->>P: Generate Marathi voice message
+    Note over P: Text: "तातडीची सूचना! पानांवर ब्लाइट रोग<br/>आढळला आहे. आता लगेच बुरशीनाशक<br/>फवारणी करा."
+    P-->>L: Return audio file URL
+    
+    L->>AC: Initiate automated call
+    AC->>F: Ring farmer's phone
+    F->>AC: Answer call
+    AC->>F: Play Marathi alert message
+    
+    L->>DB: Log interaction (method: voice_call)
+    L->>S3: Store audio file for analytics
+    
+    Note over F: Farmer receives critical alert<br/>in native Marathi language
+Intelligent Routing Logic
+Severity-Based Alert Routing
+def route_alert(diagnosis, farmer_profile):
+    severity = diagnosis['severity_score']
+    language = farmer_profile['language_preference']
+    
+    if severity > 7:
+        # Critical: Voice call within 2 minutes
+        voice_message = generate_voice_message(
+            diagnosis['treatment'], 
+            language
+        )
+        trigger_voice_call(
+            farmer_profile['phone_number'], 
+            voice_message
+        )
+        
+        # Follow-up with WhatsApp details
+        send_whatsapp_message(
+            farmer_profile['whatsapp_number'],
+            diagnosis['detailed_treatment']
+        )
+    else:
+        # Standard: WhatsApp text only
+        send_whatsapp_message(
+            farmer_profile['whatsapp_number'],
+            diagnosis['treatment']
+        )
+Example Alert Messages
+Critical Alert (Severity > 7) - Marathi Voice Call:
+
+"नमस्कार! हे अग्रो-गार्ड साथी आहे. तुमच्या पिकावर गंभीर रोग आढळला आहे. आता लगेच उपचार करा. तपशील WhatsApp वर पाठवत आहे."
+
+Standard Advisory (Severity ≤ 7) - Hindi WhatsApp:
+
+"🌾 फसल सलाह: आपकी फसल में हल्का कीट प्रकोप दिखा है। नीम का तेल (10ml) + साबुन (5ml) + पानी (1L) मिलाकर शाम को छिड़काव करें।"
+
+Performance & Scalability
+Performance Targets
+Image Analysis: <60 seconds end-to-end
+Voice Call Initiation: <2 minutes for critical alerts
+WhatsApp Response: <5 seconds for standard advice
+System Availability: 99.9% uptime SLA
+Scalability Features
+Serverless Auto-scaling: AWS Lambda handles millions of concurrent requests
+DynamoDB On-Demand: Automatic scaling based on traffic patterns
+S3 Infinite Storage: No limits on image or audio file storage
+Multi-Region Deployment: Low latency for farmers across India
+Cost Optimization
+Pay-per-Use: Zero cost when system is idle
+Image Compression: Reduces storage and transfer costs
+Lifecycle Policies: Automatic archival of old data
+Reserved Capacity: For predictable workloads during peak seasons
+Security & Privacy
+Data Protection
+Encryption: All data encrypted at rest (S3, DynamoDB) and in transit (TLS 1.3)
+Access Control: IAM roles with least privilege principle
+Data Retention: Automatic deletion of crop images after 30 days
+Audit Logging: Complete audit trail using CloudTrail
+Privacy Compliance
+Data Localization: All farmer data stored in AWS Mumbai region
+Consent Management: Explicit opt-in for data usage and voice calls
+Anonymization: Personal data anonymized for analytics
+Right to Deletion: Farmers can request complete data removal
+Monitoring & Analytics
+Operational Metrics
+Response Times: End-to-end latency tracking
+Success Rates: Diagnosis accuracy and farmer satisfaction
+Usage Patterns: Peak usage times and regional distribution
+Cost Analysis: AWS service usage and optimization opportunities
+Business Intelligence
+Disease Trends: Regional disease outbreak patterns
+Farmer Engagement: Communication preference analysis
+Treatment Effectiveness: Follow-up success tracking
+ROI Measurement: Crop loss prevention quantification
+Deployment Architecture
+Infrastructure as Code
+# serverless.yml
+service: agro-guard-saathi
+
+provider:
+  name: aws
+  runtime: python3.9
+  region: ap-south-1  # Mumbai region for data localization
+  
+functions:
+  orchestrator:
+    handler: src/orchestrator.handler
+    events:
+      - http:
+          path: /webhook
+          method: post
+    environment:
+      BEDROCK_MODEL_ID: anthropic.claude-3-5-sonnet-20241022-v2:0
+      POLLY_VOICE_HINDI: Aditi
+      POLLY_VOICE_MARATHI: Aditi
+
+resources:
+  Resources:
+    FarmersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: agro-guard-farmers
+        BillingMode: ON_DEMAND
+        
+    ImagesS3Bucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: agro-guard-images
+        LifecycleConfiguration:
+          Rules:
+            - Status: Enabled
+              ExpirationInDays: 30
+Future Enhancements
+Phase 2 Features
+IoT Integration: Field sensors for real-time crop monitoring
+Market Intelligence: Crop pricing and market advisory
+Insurance Integration: Automated crop insurance claims
+Drone Imagery: Aerial crop health assessment
+Expansion Plans
+Additional Languages: Tamil, Telugu, Gujarati support
+Weather Integration: Enhanced weather prediction models
+Soil Analysis: Soil health monitoring and recommendations
+Community Features: Farmer-to-farmer knowledge sharing
